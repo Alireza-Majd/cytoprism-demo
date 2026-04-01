@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Cytoprism — Cell Communication</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@200;300;400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #08080f; color: #e0e0f0; font-family: 'JetBrains Mono', 'SF Mono', monospace; overflow-x: hidden; }
+  @keyframes ringPulse { 0% { transform: translate(-50%,-50%) scale(1); opacity: 0.4; } 100% { transform: translate(-50%,-50%) scale(1.8); opacity: 0; } }
+  @keyframes cellBloom { from { opacity: 0; transform: translate(-50%,-50%) scale(0.3); } to { opacity: 1; transform: translate(-50%,-50%) scale(1); } }
+  @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ============================================================================
+//  YOUR DATA — EDIT THIS SECTION
+// ============================================================================
+//
+//  HOW TO FILL THIS IN:
+//
+//  1. PATHWAYS: Each entry is one inflammatory pathway you scored in monocytes.
+//     - id:    short key (no spaces)
+//     - label: display name (shown in UI)
+//     - color: hex color for the bar
+//
+//  2. GENES: Each entry is one gene you perturbed in glia.
+//     - id:      gene symbol
+//     - label:   display name
+//     - pw:      an object mapping pathway id → effect size
+//                Positive = pro-inflammatory in monocytes when this gene is knocked down
+//                Negative = anti-inflammatory
+//                Scale: roughly -1 to +1 (normalize your NES or z-scores to this range)
+//
+//  EXAMPLE for converting your data:
+//     If TREM2 knockdown gives NES = +2.8 on NF-κB in monocytes,
+//     and your max NES across all conditions is ~4.0,
+//     then: 2.8 / 4.0 = 0.7 → put 0.7
+//
+//  You can add or remove genes and pathways freely.
+//  The UI adapts automatically.
+// ============================================================================
+
+const PATHWAYS = [
+  { id: "nfkb", label: "NF-κB", color: "#E8655A" },
+  { id: "tnf", label: "TNF Signaling", color: "#E87D4A" },
+  { id: "il6_stat", label: "IL-6/JAK-STAT", color: "#E8A54A" },
+  { id: "inflammasome", label: "Inflammasome", color: "#D4C44A" },
+  { id: "chemokine", label: "Chemokines", color: "#5EAA68" },
+  { id: "complement", label: "Complement", color: "#5BA4D9" },
+  { id: "ifn", label: "Interferon", color: "#9B7ED8" },
+  { id: "tlr", label: "Toll-like Receptor", color: "#D4577A" },
+  { id: "ros", label: "ROS/Oxidative", color: "#7BAFD4" },
+  { id: "phagocytosis", label: "Phagocytosis", color: "#D4957A" },
+];
+
+const GENES = [
+  // Real data: merged monocyte perturbation effects from 10 lanes, 36K cells
+  // Positive = glial KD makes monocytes MORE inflammatory; Negative = LESS inflammatory
+  { id: "CYSTM1", label: "CYSTM1", pw: { nfkb: 0.02, tnf: 0.01, il6_stat: 0.01, inflammasome: -0.06, chemokine: -0.7, complement: 0.05, ifn: -0.04, tlr: 0.02, ros: -0.13, phagocytosis: -0.04 } },
+  { id: "TMED2", label: "TMED2", pw: { nfkb: -0.05, tnf: -0.02, il6_stat: -0.02, inflammasome: -0.07, chemokine: -0.5, complement: -0.02, ifn: -0.03, tlr: 0.02, ros: -0.18, phagocytosis: 0.01 } },
+  { id: "MVD", label: "MVD", pw: { nfkb: -0.02, tnf: -0.01, il6_stat: -0.03, inflammasome: -0.08, chemokine: -0.43, complement: -0.09, ifn: -0.02, tlr: -0.02, ros: -0.1, phagocytosis: -0.02 } },
+  { id: "EEF1A2", label: "EEF1A2", pw: { nfkb: 0.01, tnf: -0.01, il6_stat: -0.05, inflammasome: -0.11, chemokine: -0.36, complement: -0.04, ifn: -0.04, tlr: -0.03, ros: -0.13, phagocytosis: -0.01 } },
+  { id: "EVA1B", label: "EVA1B", pw: { nfkb: -0.01, tnf: 0.0, il6_stat: -0.06, inflammasome: -0.02, chemokine: -0.54, complement: -0.11, ifn: 0.01, tlr: 0.01, ros: 0.04, phagocytosis: -0.04 } },
+  { id: "ERBB3", label: "ERBB3", pw: { nfkb: -0.06, tnf: 0.02, il6_stat: -0.04, inflammasome: -0.08, chemokine: -0.3, complement: -0.08, ifn: -0.0, tlr: -0.05, ros: -0.01, phagocytosis: -0.07 } },
+  { id: "RELA", label: "RELA", pw: { nfkb: 0.0, tnf: 0.03, il6_stat: 0.0, inflammasome: 0.01, chemokine: 0.54, complement: -0.01, ifn: 0.09, tlr: -0.01, ros: 0.15, phagocytosis: -0.02 } },
+  { id: "IREB2", label: "IREB2", pw: { nfkb: 0.0, tnf: 0.02, il6_stat: -0.03, inflammasome: 0.02, chemokine: 0.74, complement: 0.1, ifn: 0.01, tlr: 0.03, ros: -0.07, phagocytosis: -0.0 } },
+  { id: "BTK", label: "BTK", pw: { nfkb: -0.01, tnf: 0.01, il6_stat: 0.05, inflammasome: 0.16, chemokine: 0.49, complement: 0.15, ifn: 0.01, tlr: 0.04, ros: -0.03, phagocytosis: 0.01 } },
+  { id: "PGAP1", label: "PGAP1", pw: { nfkb: 0.13, tnf: -0.01, il6_stat: 0.07, inflammasome: 0.09, chemokine: 0.5, complement: 0.09, ifn: -0.0, tlr: -0.05, ros: 0.04, phagocytosis: 0.06 } },
+  { id: "OSMR", label: "OSMR", pw: { nfkb: 0.06, tnf: 0.02, il6_stat: -0.05, inflammasome: 0.0, chemokine: 0.78, complement: 0.17, ifn: 0.01, tlr: 0.1, ros: -0.03, phagocytosis: 0.08 } },
+  { id: "NPM1", label: "NPM1", pw: { nfkb: 0.09, tnf: -0.02, il6_stat: 0.04, inflammasome: -0.01, chemokine: 1.0, complement: 0.05, ifn: -0.0, tlr: -0.01, ros: 0.08, phagocytosis: 0.06 } },
+];
+
+// ============================================================================
+//  EXPLORER CONFIG — organ roadmap and disease models
+// ============================================================================
+
+const ORGANS = [
+  { id: "GUT1", label: "Gut", status: "active", color: "#E8655A",
+    cells: ["Epithelial", "Macrophage", "T cell", "Dendritic", "Goblet", "Enteric neuron"] },
+  { id: "LIVER1", label: "Liver", status: "planned", color: "#5EAA68",
+    cells: ["Hepatocyte", "Kupffer cell", "Stellate cell", "Cholangiocyte"] },
+  { id: "BRAIN1", label: "Brain", status: "coming", color: "#9B7ED8",
+    cells: ["Microglia", "Astrocyte", "Neuron", "Oligodendrocyte", "Pericyte"] },
+  { id: "IMMUNE1", label: "Immune", status: "planned", color: "#D4577A",
+    cells: ["T cell", "B cell", "NK cell", "Monocyte", "Dendritic"] },
+  { id: "LUNG1", label: "Lung", status: "coming", color: "#5BA4D9",
+    cells: ["Alveolar mac.", "Epithelial", "Endothelial", "Fibroblast"] },
+  { id: "SKIN1", label: "Skin", status: "planned", color: "#E8A54A",
+    cells: ["Keratinocyte", "Langerhans", "Melanocyte", "Fibroblast"] },
+];
+const POS = {
+  GUT1: { x: 18, y: 50 }, LIVER1: { x: 44, y: 24 }, BRAIN1: { x: 76, y: 18 },
+  IMMUNE1: { x: 48, y: 56 }, LUNG1: { x: 42, y: 82 }, SKIN1: { x: 78, y: 62 },
+};
+const EDGES = [
+  { from: "GUT1", to: "LIVER1", axis: "Gut–Liver Axis" },
+  { from: "GUT1", to: "IMMUNE1", axis: "Mucosal Immunity" },
+  { from: "GUT1", to: "LUNG1", axis: "Gut–Lung Axis" },
+  { from: "LIVER1", to: "BRAIN1", axis: "Metabolic–BBB" },
+  { from: "IMMUNE1", to: "SKIN1", axis: "Immune–Skin" },
+  { from: "IMMUNE1", to: "BRAIN1", axis: "Neuroimmune" },
+];
+const DISEASES = [
+  { id: "ALZ1", label: "Alzheimer's", color: "#9B7ED8", organs: ["BRAIN1","GUT1","IMMUNE1"] },
+  { id: "PARK1", label: "Parkinson's", color: "#7BAFD4", organs: ["BRAIN1","GUT1"] },
+  { id: "RA1", label: "Rheumatoid Arthritis", color: "#D4957A", organs: ["IMMUNE1","SKIN1"] },
+  { id: "IBD1", label: "Inflammatory Bowel", color: "#5EAA68", organs: ["GUT1","IMMUNE1"] },
+  { id: "NASH1", label: "Fatty Liver", color: "#E8A54A", organs: ["LIVER1","GUT1","IMMUNE1"] },
+];
+
+// ============================================================================
+//  ENGINE — do not edit below unless you know what you're doing
+// ============================================================================
+
+function cR(f) { const r = {}; PATHWAYS.forEach(p => { let s = 0, c = 0; GENES.forEach(g => { const v = f[g.id] || 0; if (v) { s += v * g.pw[p.id]; c++; } }); r[p.id] = c ? Math.max(-1, Math.min(1, s / Math.sqrt(c))) : 0; }); return r; }
+function cS(r) { const v = Object.values(r); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0; }
+
+// ==================== TISSUE BACKGROUND ====================
+
+function TissueBackground() {
+  const ref = useRef(null); const anim = useRef(null);
+  const cellsRef = useRef([]); const vesiclesRef = useRef([]); const time = useRef(0);
+  useEffect(() => {
+    const canvas = ref.current; if (!canvas) return;
+    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
+    resize(); window.addEventListener("resize", resize);
+    const palette = ["#E8655A","#9B7ED8","#5BA4D9","#5EAA68","#D4577A","#E8A54A"];
+    if (cellsRef.current.length === 0) {
+      const count = Math.floor((window.innerWidth * window.innerHeight) / 28000);
+      for (let i = 0; i < count; i++) cellsRef.current.push({
+        x: Math.random()*window.innerWidth, y: Math.random()*window.innerHeight,
+        r: 14+Math.random()*22, color: palette[Math.floor(Math.random()*palette.length)],
+        bp: Math.random()*Math.PI*2, bs: 0.003+Math.random()*0.004,
+        dx: (Math.random()-0.5)*0.04, dy: (Math.random()-0.5)*0.03,
+      });
+    }
+    const ctx = canvas.getContext("2d");
+    const spawn = () => {
+      const cells = cellsRef.current; if (cells.length < 2) return;
+      const from = cells[Math.floor(Math.random()*cells.length)];
+      const cands = [];
+      for (const c of cells) { if (c === from) continue; const d = Math.hypot(c.x-from.x, c.y-from.y); if (d < 200 && d > 40) cands.push(c); }
+      if (!cands.length) return;
+      const to = cands[Math.floor(Math.random()*cands.length)];
+      const mx = (from.x+to.x)/2, my = (from.y+to.y)/2;
+      const px = -(to.y-from.y), py = to.x-from.x;
+      const len = Math.hypot(px,py)||1; const curve = (Math.random()-0.5)*0.4;
+      vesiclesRef.current.push({ fx:from.x,fy:from.y,tx:to.x,ty:to.y,
+        cx:mx+(px/len)*curve*80, cy:my+(py/len)*curve*80,
+        t:0, sp:0.003+Math.random()*0.004, sz:1.2+Math.random()*1.5, col:from.color, trail:[] });
+    };
+    const draw = () => {
+      time.current++; const w = canvas.width, h = canvas.height; ctx.clearRect(0,0,w,h);
+      if (time.current%12===0) spawn();
+      for (const cell of cellsRef.current) {
+        cell.bp += cell.bs; cell.x += cell.dx; cell.y += cell.dy;
+        if(cell.x<-40)cell.x=w+40; if(cell.x>w+40)cell.x=-40;
+        if(cell.y<-40)cell.y=h+40; if(cell.y>h+40)cell.y=-40;
+        const br = cell.r+Math.sin(cell.bp)*1.5;
+        ctx.beginPath(); ctx.arc(cell.x,cell.y,br,0,Math.PI*2);
+        ctx.strokeStyle=`${cell.color}08`; ctx.lineWidth=1; ctx.stroke();
+        const grad=ctx.createRadialGradient(cell.x-br*0.15,cell.y-br*0.15,0,cell.x,cell.y,br);
+        grad.addColorStop(0,`${cell.color}06`); grad.addColorStop(0.6,`${cell.color}03`); grad.addColorStop(1,"transparent");
+        ctx.fillStyle=grad; ctx.fill();
+        ctx.beginPath(); ctx.arc(cell.x,cell.y,2,0,Math.PI*2); ctx.fillStyle=`${cell.color}0a`; ctx.fill();
+      }
+      vesiclesRef.current = vesiclesRef.current.filter(v => {
+        v.t+=v.sp; if(v.t>1) return false;
+        const t=v.t, mt=1-t;
+        const x=mt*mt*v.fx+2*mt*t*v.cx+t*t*v.tx;
+        const y=mt*mt*v.fy+2*mt*t*v.cy+t*t*v.ty;
+        v.trail.push({x,y}); if(v.trail.length>8) v.trail.shift();
+        for(let i=0;i<v.trail.length;i++){
+          const a=(i/v.trail.length)*0.06;
+          ctx.beginPath(); ctx.arc(v.trail[i].x,v.trail[i].y,v.sz*0.6,0,Math.PI*2);
+          ctx.fillStyle=`${v.col}${Math.round(a*255).toString(16).padStart(2,"0")}`; ctx.fill();
+        }
+        ctx.beginPath(); ctx.arc(x,y,v.sz,0,Math.PI*2); ctx.fillStyle=`${v.col}12`; ctx.fill();
+        const glow=ctx.createRadialGradient(x,y,0,x,y,v.sz*3);
+        glow.addColorStop(0,`${v.col}08`); glow.addColorStop(1,"transparent");
+        ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(x,y,v.sz*3,0,Math.PI*2); ctx.fill();
+        return true;
+      });
+      anim.current=requestAnimationFrame(draw);
+    };
+    draw();
+    return () => { cancelAnimationFrame(anim.current); window.removeEventListener("resize",resize); };
+  }, []);
+  return React.createElement("canvas", { ref, style: { position:"fixed",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:0 } });
+}
+
+// ==================== EXPLORER ====================
+
+function ExplorerView({ onEnterModel }) {
+  const [hovOrgan, setHovOrgan] = useState(null);
+  const [hovDisease, setHovDisease] = useState(null);
+  const fieldRef = useRef(null);
+  const [dims, setDims] = useState({ w: 700, h: 380 });
+  useEffect(() => {
+    if (!fieldRef.current) return;
+    const ro = new ResizeObserver(e => { const { width, height } = e[0].contentRect; if (width > 0) setDims({ w: width, h: height }); });
+    ro.observe(fieldRef.current); return () => ro.disconnect();
+  }, []);
+
+  const diseaseObj = hovDisease ? DISEASES.find(d => d.id === hovDisease) : null;
+  const litEdges = new Set(); const litOrgans = new Set();
+  if (diseaseObj) { diseaseObj.organs.forEach(o => litOrgans.add(o)); EDGES.forEach((e, i) => { if (diseaseObj.organs.includes(e.from) && diseaseObj.organs.includes(e.to)) litEdges.add(i); }); }
+  const getXY = (id) => { const p = POS[id]; return { x: (p.x/100)*dims.w, y: (p.y/100)*dims.h }; };
+  const hovOrganObj = hovOrgan ? ORGANS.find(o => o.id === hovOrgan) : null;
+  const hovPos = hovOrgan ? getXY(hovOrgan) : null;
+
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"32px 20px", position:"relative", zIndex:1 }}>
+      <div style={{ textAlign:"center", marginBottom:20 }}>
+        <div style={{ fontSize:10, letterSpacing:"0.5em", color:"#2a2a3a", fontWeight:600, marginBottom:8 }}>CYTOPRISM</div>
+        <h1 style={{ fontSize:28, fontWeight:200, letterSpacing:"0.18em", margin:0, color:"#ccc" }}>CELL COMMUNICATION</h1>
+      </div>
+      <div style={{ textAlign:"center", marginBottom:30, maxWidth:440 }}>
+        <p style={{ fontSize:12, color:"#4a4a5e", lineHeight:1.8, margin:0, fontWeight:300, fontStyle:"italic" }}>
+          The body is a network of conversations. Disease is a conversation gone wrong.
+        </p>
+        <p style={{ fontSize:11, color:"#6a6a80", lineHeight:1.8, margin:"4px 0 0", fontWeight:400 }}>
+          If we can decode the signal, we can change the outcome.
+        </p>
+      </div>
+
+      <div ref={fieldRef} style={{ position:"relative", width:"100%", maxWidth:720, aspectRatio:"1.85 / 1" }}>
+        <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none", overflow:"visible" }}>
+          {EDGES.map((e, i) => {
+            const a = getXY(e.from), b = getXY(e.to);
+            const isLit = litEdges.has(i);
+            const ec = isLit ? diseaseObj.color : "#ffffff";
+            return (
+              <g key={`e-${i}`}>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={ec} strokeWidth={isLit?1.5:0.5} strokeOpacity={isLit?0.3:0.04} strokeDasharray={isLit?"6 4":"2 6"}>
+                  {isLit && <animate attributeName="stroke-dashoffset" from="0" to="-20" dur="1.5s" repeatCount="indefinite" />}
+                </line>
+                {!diseaseObj && <text x={(a.x+b.x)/2} y={(a.y+b.y)/2-6} textAnchor="middle" style={{fontSize:7,fill:"#1e1e2e",fontFamily:"'JetBrains Mono',monospace",fontWeight:500}}>{e.axis}</text>}
+                {isLit && <text x={(a.x+b.x)/2} y={(a.y+b.y)/2-6} textAnchor="middle" style={{fontSize:8,fill:`${diseaseObj.color}88`,fontFamily:"'JetBrains Mono',monospace",fontWeight:600}}>{diseaseObj.id}</text>}
+              </g>
+            );
+          })}
+          {hovOrganObj && hovOrganObj.cells.map((_, i) => {
+            const angle = (i/hovOrganObj.cells.length)*Math.PI*2-Math.PI/2; const r = 68;
+            return <line key={`cl-${i}`} x1={hovPos.x} y1={hovPos.y} x2={hovPos.x+Math.cos(angle)*r} y2={hovPos.y+Math.sin(angle)*r} stroke={hovOrganObj.color} strokeWidth={0.7} strokeOpacity={0.2} />;
+          })}
+        </svg>
+
+        {ORGANS.map(o => {
+          const pos = POS[o.id]; const isActive = o.status === "active"; const isComing = o.status === "coming";
+          const isHov = hovOrgan === o.id; const isDhl = litOrgans.has(o.id);
+          return (
+            <div key={o.id} onMouseEnter={() => { setHovOrgan(o.id); setHovDisease(null); }} onMouseLeave={() => setHovOrgan(null)}
+              onClick={() => isActive && onEnterModel(o.id)}
+              style={{ position:"absolute", left:`${pos.x}%`, top:`${pos.y}%`, transform:"translate(-50%,-50%)", cursor:isActive?"pointer":"default", zIndex:isHov?10:1 }}>
+              {isActive && <div style={{ position:"absolute",left:"50%",top:"50%",transform:"translate(-50%,-50%)",width:80,height:80,borderRadius:"50%",border:`1px solid ${o.color}18`,animation:"ringPulse 3s ease-out infinite" }} />}
+              {isDhl && <div style={{ position:"absolute",left:"50%",top:"50%",transform:"translate(-50%,-50%)",width:66,height:66,borderRadius:"50%",border:`1.5px solid ${diseaseObj.color}40`,boxShadow:`0 0 18px ${diseaseObj.color}12`,transition:"all 0.3s" }} />}
+              <div style={{
+                width:isHov?54:isActive?48:42, height:isHov?54:isActive?48:42, borderRadius:"50%",
+                background:isActive?`radial-gradient(circle at 38% 33%, ${o.color}28, ${o.color}0a 70%, transparent)`:isDhl?`radial-gradient(circle at 38% 33%, ${o.color}18, transparent 70%)`:`radial-gradient(circle at 38% 33%, ${o.color}0c, transparent 70%)`,
+                border:`1.5px solid ${isActive?`${o.color}50`:isDhl?`${o.color}35`:isHov?`${o.color}28`:`${o.color}10`}`,
+                display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.35s cubic-bezier(0.16,1,0.3,1)",
+                boxShadow:isActive&&isHov?`0 0 30px ${o.color}18`:"none",
+              }}>
+                <div style={{ width:isActive?8:5, height:isActive?8:5, borderRadius:"50%",
+                  background:isActive?o.color:isDhl?`${o.color}88`:`${o.color}30`,
+                  boxShadow:isActive?`0 0 8px ${o.color}66`:"none", transition:"all 0.3s" }} />
+              </div>
+              <div style={{ position:"absolute",left:"50%",top:"calc(100% + 5px)",transform:"translateX(-50%)",textAlign:"center",whiteSpace:"nowrap" }}>
+                <div style={{ fontSize:12,fontWeight:600,color:isActive?o.color:isDhl?`${o.color}bb`:isHov?`${o.color}88`:"#333",letterSpacing:"0.06em",transition:"color 0.3s" }}>{o.id}</div>
+                <div style={{ fontSize:7,color:isActive?`${o.color}88`:isDhl?`${o.color}55`:"#222",letterSpacing:"0.1em",marginTop:1 }}>{isActive?"ACTIVE":isComing?"SOON":"PLANNED"}</div>
+              </div>
+              {isHov && o.cells.map((cell, i) => {
+                const angle = (i/o.cells.length)*Math.PI*2-Math.PI/2; const radius = 68;
+                return (
+                  <div key={cell} style={{ position:"absolute",left:`calc(50% + ${Math.cos(angle)*radius}px)`,top:`calc(50% + ${Math.sin(angle)*radius}px)`,
+                    transform:"translate(-50%,-50%)",whiteSpace:"nowrap",display:"flex",alignItems:"center",gap:4,
+                    animation:`cellBloom 0.3s ${i*0.03}s cubic-bezier(0.16,1,0.3,1) both`,pointerEvents:"none" }}>
+                    <div style={{ width:4,height:4,borderRadius:"50%",background:o.color,opacity:0.6,boxShadow:`0 0 4px ${o.color}33` }} />
+                    <span style={{ fontSize:9,color:`${o.color}bb`,fontWeight:500 }}>{cell}</span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop:24,display:"flex",alignItems:"center",gap:7,padding:"5px 13px",borderRadius:20,background:"#E8655A08",border:"1px solid #E8655A15" }}>
+        <div style={{ width:6,height:6,borderRadius:"50%",background:"#E8655A",boxShadow:"0 0 6px #E8655A55",animation:"blink 2s infinite" }} />
+        <span style={{ fontSize:10,color:"#E8655A",fontWeight:600,letterSpacing:"0.1em" }}>GUT1 ACTIVE</span>
+      </div>
+
+      <div style={{ marginTop:18,display:"flex",gap:5,justifyContent:"center",flexWrap:"wrap" }}>
+        {DISEASES.map(d => {
+          const isH = hovDisease === d.id;
+          return (
+            <div key={d.id} onMouseEnter={() => { setHovDisease(d.id); setHovOrgan(null); }} onMouseLeave={() => setHovDisease(null)}
+              style={{ padding:"4px 11px",borderRadius:14,background:isH?`${d.color}12`:`${d.color}06`,border:`1px solid ${isH?`${d.color}35`:`${d.color}10`}`,
+                fontSize:9,color:isH?d.color:`${d.color}50`,fontWeight:isH?600:500,cursor:"default",transition:"all 0.25s",userSelect:"none" }}>
+              {d.id} · {d.label}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ==================== CONSOLE ====================
+
+function Fader({ gene, value, onChange }) {
+  const ref = useRef(null); const drag = useRef(false);
+  const mv = useCallback((cy) => { if (!ref.current) return; const r = ref.current.getBoundingClientRect(); onChange(gene.id, Math.max(0, Math.min(1, 1-(cy-r.top)/r.height))); }, [gene.id, onChange]);
+  useEffect(() => {
+    const m = e => { if (!drag.current) return; e.preventDefault(); mv(e.touches?e.touches[0].clientY:e.clientY); };
+    const u = () => { drag.current = false; };
+    window.addEventListener("mousemove",m); window.addEventListener("mouseup",u);
+    window.addEventListener("touchmove",m,{passive:false}); window.addEventListener("touchend",u);
+    return () => { window.removeEventListener("mousemove",m); window.removeEventListener("mouseup",u); window.removeEventListener("touchmove",m); window.removeEventListener("touchend",u); };
+  }, [mv]);
+  const p = value*100; const k = value>0.5?`hsl(${10+(1-value)*30},75%,55%)`:value>0?`hsl(38,65%,55%)`:"#444";
+  return (
+    <div style={{ display:"flex",flexDirection:"column",alignItems:"center",gap:5,width:58 }}>
+      <div style={{ fontSize:9,color:value>0.6?"#E8655A":"#555",fontWeight:600,minHeight:13 }}>{value>0?`${Math.round(p)}%`:"OFF"}</div>
+      <div ref={ref} onMouseDown={e=>{drag.current=true;mv(e.clientY);}} onTouchStart={e=>{drag.current=true;mv(e.touches[0].clientY);}}
+        style={{ position:"relative",width:6,height:130,background:"linear-gradient(to top,#141420,#1e1e30)",borderRadius:3,cursor:"pointer" }}>
+        <div style={{ position:"absolute",bottom:0,left:0,right:0,height:`${p}%`,borderRadius:3,background:value>0.5?"linear-gradient(to top,rgba(232,101,90,0.1),rgba(232,101,90,0.3))":"linear-gradient(to top,rgba(232,165,74,0.08),rgba(232,165,74,0.2))" }} />
+        {[0,50,100].map(t=><div key={t} style={{ position:"absolute",bottom:`${t}%`,left:-3,width:12,height:1,background:"#252535" }} />)}
+        <div style={{ position:"absolute",bottom:`${p}%`,left:"50%",transform:"translate(-50%,50%)",width:20,height:10,borderRadius:3,background:k,boxShadow:`0 0 6px ${k}55`,border:"1px solid rgba(255,255,255,0.1)",cursor:"grab" }} />
+      </div>
+      <div style={{ fontSize:10,fontWeight:700,color:value>0?"#ddd":"#555" }}>{gene.label}</div>
+    </div>
+  );
+}
+
+function Wave({ score, active }) {
+  const ref = useRef(null); const anim = useRef(null); const ph = useRef(0);
+  useEffect(() => {
+    const c = ref.current; if (!c) return; const ctx = c.getContext("2d"); const w = c.width; const h = c.height;
+    const draw = () => {
+      ph.current += 0.015+Math.abs(score)*0.035; ctx.clearRect(0,0,w,h);
+      ctx.strokeStyle="#141425"; ctx.lineWidth=0.5;
+      for(let x=0;x<w;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}
+      for(let y=0;y<h;y+=15){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+      if(!active){ctx.globalAlpha=0.1;for(let i=0;i<60;i++){ctx.fillStyle="#444";ctx.fillRect(Math.random()*w,Math.random()*h,1,1);}ctx.globalAlpha=1;ctx.fillStyle="#2a2a3a";ctx.font="9px monospace";ctx.textAlign="center";ctx.fillText("AWAITING SIGNAL",w/2,h/2+3);}
+      else{for(let l=0;l<3;l++){const amp=(6+Math.abs(score)*20)*(1-l*0.15);const freq=0.006+l*0.003+Math.abs(score)*0.004;ctx.beginPath();ctx.moveTo(0,h/2);for(let x=0;x<=w;x+=2)ctx.lineTo(x,h/2+Math.sin(x*freq+ph.current+l*1.2)*amp+Math.sin(x*freq*2.3+ph.current*1.5+l)*amp*0.25);const hue=score>0?score*25:130-score*60;ctx.strokeStyle=`hsla(${hue},${55+Math.abs(score)*30}%,55%,${0.12+(l/3)*0.3})`;ctx.lineWidth=l===2?1.8:1.2;ctx.stroke();}}
+      anim.current=requestAnimationFrame(draw);};
+    draw(); return()=>cancelAnimationFrame(anim.current);
+  },[score,active]);
+  return React.createElement("canvas",{ref,width:500,height:70,style:{width:"100%",height:70,borderRadius:6,background:"#0a0a14"}});
+}
+
+function PBar({ p, value }) {
+  const a=Math.abs(value); const n=value<0;
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6,height:24}}>
+      <div style={{width:82,fontSize:9,color:a>0.3?p.color:"#555",fontWeight:600,textAlign:"right",flexShrink:0}}>{p.label}</div>
+      <div style={{flex:1,height:16,background:"#10101c",borderRadius:3,position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",left:"50%",top:0,bottom:0,width:1,background:"#1e1e2e"}} />
+        <div style={{position:"absolute",top:2,bottom:2,left:n?`${50-a*50}%`:"50%",width:`${a*50}%`,background:n?`linear-gradient(to left,${p.color}20,${p.color})`:`linear-gradient(to right,${p.color}20,${p.color})`,borderRadius:2,boxShadow:a>0.4?`0 0 8px ${p.color}44`:"none",transition:"all 0.15s ease-out"}} />
+      </div>
+      <div style={{width:42,fontSize:9,color:n?"#5EAA68":a>0.3?"#E8655A":"#444",fontWeight:600,flexShrink:0}}>{value===0?"—":`${n?"↓":"↑"}${(a*100).toFixed(0)}%`}</div>
+    </div>
+  );
+}
+
+function ConsoleView({ onBack }) {
+  const [faders, setFaders] = useState(() => { const o = {}; GENES.forEach(g => o[g.id] = 0); return o; });
+  const [audioCtx, setAudioCtx] = useState(null);
+  const [soundOn, setSoundOn] = useState(false);
+  const oscillators = useRef({}); const gainNodes = useRef({});
+  const response = cR(faders); const score = cS(response);
+  const active = Object.values(faders).some(v => v > 0.05);
+  const sc = score>0.3?"#E8655A":score>0.1?"#E8A54A":score<-0.1?"#5EAA68":"#555";
+  const hc = useCallback((id, v) => setFaders(p => ({ ...p, [id]: v })), []);
+  const reset = useCallback(() => { const o = {}; GENES.forEach(g => o[g.id] = 0); setFaders(o); }, []);
+
+  const initAudio = useCallback(() => {
+    if (audioCtx) return audioCtx;
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const master = ctx.createGain(); master.gain.value = 0.08; master.connect(ctx.destination);
+    PATHWAYS.forEach((p, i) => {
+      const osc = ctx.createOscillator(); const gain = ctx.createGain();
+      osc.type = "sine"; osc.frequency.value = 180 + i * 80; gain.gain.value = 0;
+      osc.connect(gain); gain.connect(master); osc.start();
+      oscillators.current[p.id] = osc; gainNodes.current[p.id] = gain;
+    });
+    setAudioCtx(ctx); return ctx;
+  }, [audioCtx]);
+
+  const toggleSound = useCallback(() => {
+    if (!soundOn) { const ctx = initAudio(); if (ctx.state === "suspended") ctx.resume(); setSoundOn(true); }
+    else { PATHWAYS.forEach(p => { if (gainNodes.current[p.id]) gainNodes.current[p.id].gain.setTargetAtTime(0, audioCtx.currentTime, 0.1); }); setSoundOn(false); }
+  }, [soundOn, initAudio, audioCtx]);
+
+  useEffect(() => {
+    if (!soundOn || !audioCtx) return;
+    PATHWAYS.forEach(p => { const g = gainNodes.current[p.id]; if (g) g.gain.setTargetAtTime(Math.abs(response[p.id]||0)*0.5, audioCtx.currentTime, 0.08); });
+  }, [response, soundOn, audioCtx]);
+
+  return (
+    <div style={{ minHeight:"100vh",padding:"20px 16px",display:"flex",flexDirection:"column",alignItems:"center",position:"relative",zIndex:1 }}>
+      <div style={{ width:"100%",maxWidth:920,display:"flex",alignItems:"center",marginBottom:20 }}>
+        <button onClick={onBack} style={{ background:"none",border:"1px solid #1e1e30",borderRadius:6,padding:"5px 12px",cursor:"pointer",color:"#555",fontSize:10,fontWeight:600,letterSpacing:"0.08em",fontFamily:"inherit" }}>← MODELS</button>
+        <div style={{ flex:1,textAlign:"center" }}><span style={{ fontSize:9,letterSpacing:"0.3em",color:"#2a2a3a" }}>CYTOPRISM</span></div>
+        <div style={{ display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderRadius:12,background:"#E8655A0a",border:"1px solid #E8655A18" }}>
+          <div style={{ width:5,height:5,borderRadius:"50%",background:"#E8655A",boxShadow:"0 0 5px #E8655A66" }} />
+          <span style={{ fontSize:9,color:"#E8655A",fontWeight:600,letterSpacing:"0.1em" }}>GUT1</span>
+        </div>
+      </div>
+      <div style={{ textAlign:"center",marginBottom:16 }}>
+        <h2 style={{ fontSize:18,fontWeight:200,letterSpacing:"0.12em",margin:0,color:"#bbb" }}>INFLAMMATION CONSOLE</h2>
+        <div style={{ fontSize:9,color:"#3a3a4a",marginTop:4 }}>Perturb glial genes · Decode the signal · Observe the inflammatory response</div>
+      </div>
+      <div style={{ display:"flex",gap:20,maxWidth:920,width:"100%",flexWrap:"wrap",justifyContent:"center" }}>
+        <div style={{ background:"#0e0e1cdd",borderRadius:12,padding:"12px 10px 16px",border:"1px solid #1a1a2e",flex:"0 0 auto",backdropFilter:"blur(8px)" }}>
+          <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,padding:"0 4px" }}>
+            <span style={{ fontSize:8,fontWeight:600,letterSpacing:"0.2em",color:"#444" }}>PERTURBATIONS</span>
+            <button onClick={reset} style={{ fontSize:8,fontWeight:600,color:"#555",background:"none",border:"1px solid #252535",borderRadius:3,padding:"2px 6px",cursor:"pointer",fontFamily:"inherit" }}>RESET</button>
+          </div>
+          <div style={{ display:"flex",gap:4 }}>{GENES.map(g => <Fader key={g.id} gene={g} value={faders[g.id]} onChange={hc} />)}</div>
+        </div>
+        <div style={{ flex:"1 1 300px",minWidth:280,display:"flex",flexDirection:"column",gap:10 }}>
+          <div style={{ background:"#0e0e1cdd",borderRadius:12,padding:14,border:"1px solid #1a1a2e",backdropFilter:"blur(8px)" }}>
+            <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6 }}>
+              <div style={{ fontSize:8,fontWeight:600,letterSpacing:"0.2em",color:"#444" }}>DECODED SIGNAL</div>
+              <button onClick={toggleSound} style={{ fontSize:8,fontWeight:600,letterSpacing:"0.1em",color:soundOn?"#E8655A":"#555",background:soundOn?"#E8655A12":"none",border:`1px solid ${soundOn?"#E8655A33":"#252535"}`,borderRadius:4,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit",transition:"all 0.2s" }}>
+                {soundOn ? "♪ LISTENING" : "♪ LISTEN"}
+              </button>
+            </div>
+            <Wave score={score} active={active} />
+          </div>
+          <div style={{ background:"#0e0e1cdd",borderRadius:12,padding:14,border:"1px solid #1a1a2e",textAlign:"center",backdropFilter:"blur(8px)" }}>
+            <div style={{ fontSize:8,fontWeight:600,letterSpacing:"0.2em",color:"#444",marginBottom:4 }}>MONOCYTE INFLAMMATION</div>
+            <div style={{ fontSize:38,fontWeight:200,color:sc,lineHeight:1 }}>{score>=0?"+":""}{(score*100).toFixed(0)}</div>
+            <div style={{ fontSize:8,color:"#444",marginTop:3 }}>{score>0.3?"HIGH PRO-INFLAMMATORY":score>0.1?"MODERATE":score<-0.1?"ANTI-INFLAMMATORY":"BASELINE"}</div>
+          </div>
+          <div style={{ background:"#0e0e1cdd",borderRadius:12,padding:14,border:"1px solid #1a1a2e",backdropFilter:"blur(8px)" }}>
+            <div style={{ display:"flex",justifyContent:"space-between",marginBottom:6 }}>
+              <span style={{ fontSize:8,fontWeight:600,letterSpacing:"0.2em",color:"#444" }}>PATHWAYS</span>
+              <div style={{ display:"flex",gap:12,fontSize:7,color:"#333" }}><span>← ANTI</span><span>PRO →</span></div>
+            </div>
+            <div style={{ display:"flex",flexDirection:"column",gap:3 }}>{PATHWAYS.map(p => <PBar key={p.id} p={p} value={response[p.id]} />)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==================== APP ====================
+
+function App() {
+  const [view, setView] = useState("explorer");
+  const [fade, setFade] = useState("in");
+  const go = (t) => { setFade("out"); setTimeout(() => { setView(t); setFade("in"); }, 300); };
+  return (
+    <div>
+      <TissueBackground />
+      <div style={{ opacity:fade==="in"?1:0, transition:"opacity 0.3s ease" }}>
+        {view === "explorer" && <ExplorerView onEnterModel={() => go("console")} />}
+        {view === "console" && <ConsoleView onBack={() => go("explorer")} />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
